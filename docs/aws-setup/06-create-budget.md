@@ -1,6 +1,6 @@
 # Step 6 – Create a budget (cost alert)
 
-[← Step 5 – CloudTrail](05-setup-cloudtrail.md) · [README](../../README.md)
+[← Step 5 – CloudTrail](05-setup-cloudtrail.md) · [README](../../README.md) · Optional: [Step 7 – SSM settings →](07-ssm-parameters.md)
 
 A **budget** sends you an email when your AWS bill is getting higher than you expected. This catches mistakes early, such as a wrong setting that keeps too many backups.
 

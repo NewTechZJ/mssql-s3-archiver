@@ -55,7 +55,7 @@ A **policy** is a list of what the user is allowed to do.
       "Resource": "arn:aws:s3:::YOUR-BUCKET-NAME/*"
     },
     {
-      "Sid": "Alerts",
+      "Sid": "Notify",
       "Effect": "Allow",
       "Action": "sns:Publish",
       "Resource": "YOUR-SNS-TOPIC-ARN"
