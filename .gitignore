@@ -1,0 +1,14 @@
+# Real configuration may contain secrets - commit config.example.json only
+config.json
+config.test.json
+Logs/
+*.bak
+*.verified
+*.uploaded
+*.sha256
+__pycache__/
+*.pyc
+build/
+dist/
+*.spec
+.venv/

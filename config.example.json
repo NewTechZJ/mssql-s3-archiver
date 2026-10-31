@@ -1,0 +1,20 @@
+{
+    "sql_server": "<replace: SQL Server name, e.g. localhost or MYSERVER\\INSTANCE>",
+    "database": "<replace: name of the database to back up>",
+    "sql_username": "<optional: SQL login name. Leave empty to use the Windows login of the user running the program>",
+    "sql_password": "<optional: password for sql_username. Safer: set it in the SQLBACKUP_SQL_PASSWORD environment variable instead>",
+    "backup_folder": "<replace: folder on this PC for the .bak files, e.g. D:\\SqlBackups (use double backslashes). SQL Server must be able to write here>",
+    "part_count": "<optional: number of .bak files the backup is split into, 1 to 64. Type a number without quotes. Default 30>",
+    "bucket_name": "<replace: your S3 bucket name>",
+    "s3_prefix": "<optional: folder inside the bucket where backups are stored, e.g. prod. Empty = top of the bucket>",
+    "aws_region": "<replace: AWS Region of your bucket and SNS topic, e.g. us-east-1>",
+    "aws_profile": "<optional: AWS CLI profile name. Empty = the default profile saved by aws configure>",
+    "config_path": "<optional: SSM Parameter Store path to read settings from, e.g. /sqlbackup. Empty = use this file only>",
+    "sns_topic_arn": "<optional: SNS topic ARN for success/failure emails. Empty = no emails>",
+    "upload_storage_class": "<optional: S3 storage class for new backups. Keep STANDARD (default), or use the same value as cheap_storage_class>",
+    "cheap_storage_class": "<optional: class older backups are moved to: STANDARD_IA (default), ONEZONE_IA, INTELLIGENT_TIERING, GLACIER_IR, GLACIER or DEEP_ARCHIVE>",
+    "cheap_tier_retention_days": "<optional: days an older backup is kept after it moves to the cheap class, then deleted. Minimum 30. Default 60>",
+    "local_keep_sets": "<optional: how many uploaded backups to keep on this PC. 0 = delete them after upload. Default 1>",
+    "max_backup_age_days": "<optional: for --check only. Sends an alert if the newest backup in S3 is older than this many days. Default 9>",
+    "start_mode": "<optional: manual = wait for the Start click, auto = start by itself when opened. Default manual>"
+}
