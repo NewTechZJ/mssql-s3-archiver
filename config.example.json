@@ -5,6 +5,7 @@
     "sql_password": "<optional: password for sql_username. Safer: set it in the SQLBACKUP_SQL_PASSWORD environment variable instead>",
     "backup_folder": "<replace: folder on this PC for the .bak files, e.g. D:\\SqlBackups (use double backslashes). SQL Server must be able to write here>",
     "part_count": "<optional: number of .bak files the backup is split into, 1 to 64. Type a number without quotes. Default 30>",
+    "compression": "<optional: true = compress the backup (smaller, faster upload), false = no compression. Default true. SQL Server Express is detected and backed up without compression automatically>",
     "bucket_name": "<replace: your S3 bucket name>",
     "s3_prefix": "<optional: folder inside the bucket where backups are stored, e.g. prod. Empty = top of the bucket>",
     "aws_region": "<replace: AWS Region of your bucket and SNS topic, e.g. us-east-1>",

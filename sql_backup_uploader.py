@@ -110,6 +110,8 @@ def step_text(steps):
 
 # These are read from the local config.json only (needed to reach SSM, or purely local UI state).
 LOCAL_ONLY_KEYS = {"aws_region", "aws_profile", "config_path", "start_mode"}
+# Secrets are never written to the SSM cache file (Logs/config_cache.json is plain text on disk).
+SECRET_KEYS = {"sql_password"}
 
 DEFAULTS = {
     "sql_server": "localhost",
@@ -118,6 +120,7 @@ DEFAULTS = {
     "sql_password": "",
     "backup_folder": "",
     "part_count": 30,
+    "compression": True,             # BACKUP ... WITH COMPRESSION (switched off automatically on SQL Server Express)
     "bucket_name": "",
     "s3_prefix": "",                 # "" = dated folders sit at the bucket root
     "aws_region": "us-east-1",
@@ -187,8 +190,9 @@ def exe_is_test_build():
 
 
 # ====================== configuration (local file + AWS SSM) ======================
-def cast_value(key, value):
-    """SSM stores text only: convert it using the type of the built-in default."""
+def cast_value(key, value, source="SSM parameter"):
+    """SSM stores text only (and config.json may hold "false" or "30" as text):
+    convert it using the type of the built-in default."""
     value = value.strip()
     default = DEFAULTS.get(key)
     try:
@@ -200,8 +204,25 @@ def cast_value(key, value):
         if isinstance(default, float):
             return float(value)
     except ValueError:
-        raise ValueError(f"SSM parameter '{key}' has an invalid value: {value!r}")
+        raise ValueError(f"{source} '{key}' has an invalid value: {value!r}")
     return value
+
+
+def normalize_local_value(key, value):
+    """config.json values whose JSON type differs from the default's type are converted like SSM text,
+    so "manage_lifecycle": "false" means False (a non-empty string would otherwise count as True)."""
+    default = DEFAULTS.get(key)
+    if key not in DEFAULTS or value is None:
+        return value
+    if isinstance(default, bool):
+        if isinstance(value, bool):
+            return value
+    elif isinstance(default, (int, float)):
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return value
+    elif isinstance(value, str):
+        return value
+    return cast_value(key, str(value), source="config.json setting")
 
 
 def fetch_remote_config(local, profile=None):
@@ -229,16 +250,29 @@ def fetch_remote_config(local, profile=None):
             warnings.append(f"No usable parameters found under {path} - using local values and defaults")
             return {}, "cloud (empty)", warnings
         os.makedirs(os.path.dirname(cache), exist_ok=True)
-        with open(cache, "w", encoding="utf-8") as fh:
-            json.dump(remote, fh)
+        # never write secrets to disk: on a cache fallback they come from config.json / the env var instead
+        safe = {k: v for k, v in remote.items() if k not in SECRET_KEYS}
+        tmp = cache + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"_config_path": path, "values": safe}, fh)
+        os.replace(tmp, cache)
         return remote, "cloud", warnings
     except ValueError:
         raise                                       # a bad value in SSM must stop the run, not be hidden by the cache
     except Exception as e:  # noqa
+        cached = None
         if os.path.exists(cache):
-            with open(cache, "r", encoding="utf-8") as fh:
-                warnings.append(f"Could not read SSM ({e}) - using the last saved cloud values")
-                return json.load(fh), "cache", warnings
+            try:
+                with open(cache, "r", encoding="utf-8") as fh:
+                    cached = json.load(fh)
+            except (OSError, ValueError):
+                cached = None
+        # only use a cache written for this same SSM path (old-format caches have no path and are ignored)
+        if isinstance(cached, dict) and cached.get("_config_path") == path:
+            values = {k: v for k, v in cached.get("values", {}).items() if k not in SECRET_KEYS}
+            warnings.append(f"Could not read SSM ({e}) - using the last saved cloud values "
+                            "(secrets such as sql_password are not cached)")
+            return values, "cache", warnings
         raise RuntimeError(f"Cannot read cloud configuration at '{path}': {e}")
 
 
@@ -252,6 +286,8 @@ def load_config(path=None, profile=None):
     # was never filled in: treat it as not set (optional -> default, required -> clear "is required" error).
     local = {k: v for k, v in local.items()
              if not (isinstance(v, str) and v.strip().startswith("<") and v.strip().endswith(">"))}
+    # "false", "30" etc. written as text in config.json get the same type as the built-in default
+    local = {k: normalize_local_value(k, v) for k, v in local.items()}
 
     remote, source, warnings = {}, "local file", []
     if str(local.get("config_path", "")).strip():
@@ -277,8 +313,9 @@ def load_config(path=None, profile=None):
         if int(cfg["cheap_tier_retention_days"]) < MIN_RETENTION_DAYS:
             raise ValueError(f"cheap_tier_retention_days must be at least {MIN_RETENTION_DAYS} "
                              f"(now {cfg['cheap_tier_retention_days']}, from {cfg['_origin']['cheap_tier_retention_days']})")
-        if int(cfg["part_count"]) < 1:
-            raise ValueError("part_count must be at least 1")
+        if not 1 <= int(cfg["part_count"]) <= 64:
+            raise ValueError(f"part_count must be between 1 and 64 (SQL Server allows at most 64 backup files), "
+                             f"now {cfg['part_count']}")
     except (TypeError, ValueError) as e:
         raise ValueError(str(e))
     cfg["start_mode"] = "auto" if str(cfg["start_mode"]).lower() == "auto" else "manual"
@@ -476,7 +513,7 @@ class Pipeline:
     def disks_clause(self, files):
         return ", ".join(f"DISK = N'{sql_quote_path(f)}'" for f in files)
 
-    def require_local_parts(self, files, step):
+    def require_local_parts(self, files):
         """Steps 2 and 3 need the parts made by step 1 (in this run or an earlier one)."""
         bad = [os.path.basename(f) for f in files if not os.path.exists(f) or os.path.getsize(f) == 0]
         if len(bad) == len(files):
@@ -519,12 +556,31 @@ class Pipeline:
                                "verification FAILED")
         self.log("[TEST MODE] Checksum of joined parts matches the source - verification SUCCEEDED")
 
+
+    def is_express(self):
+        """True for SQL Server Express (EngineEdition 4), which does not support backup compression."""
+        try:
+            conn = self._connect()
+            try:
+                return conn.cursor().execute("SELECT CAST(SERVERPROPERTY('EngineEdition') AS int)").fetchone()[0] == 4
+            finally:
+                conn.close()
+        except Exception as e:  # noqa
+            self.log(f"Could not read the SQL Server edition ({e}) - assuming it supports compression",
+                     logging.WARNING)
+            return False
+
     def sql_backup(self, files):
         db_quoted = self.db.replace("]", "]]")
-        self.log(f"Starting FULL backup of {self.db} into {len(files)} files (compressed, with checksum)")
+        compress = bool(self.cfg["compression"])
+        if compress and self.is_express():
+            self.log("SQL Server Express does not support backup compression - backing up without it")
+            compress = False
+        self.log(f"Starting FULL backup of {self.db} into {len(files)} files "
+                 f"({'compressed' if compress else 'not compressed'}, with checksum)")
         self._exec_with_progress(
             f"BACKUP DATABASE [{db_quoted}] TO {self.disks_clause(files)} "
-            "WITH INIT, COMPRESSION, CHECKSUM, STATS = 10;",
+            f"WITH INIT, {'COMPRESSION' if compress else 'NO_COMPRESSION'}, CHECKSUM, STATS = 10;",
             "BACKUP", float(self.cfg["backup_timeout_hours"]), 0, 35)
         bad = [f for f in files if not os.path.exists(f) or os.path.getsize(f) == 0]
         if bad:
@@ -539,12 +595,8 @@ class Pipeline:
 
     # ---------- step 3: upload into the dated folder ----------
     def s3_sizes(self, folder):
-        sizes = {}
-        pager = self.s3.get_paginator("list_objects_v2")
-        for page in pager.paginate(Bucket=self.bucket, Prefix=self.key(folder)):
-            for o in page.get("Contents", []):
-                sizes[o["Key"].rsplit("/", 1)[-1]] = o["Size"]
-        return sizes
+        """name -> size for every object in the dated folder."""
+        return {name: size for name, (size, _) in self.s3_objects(folder).items()}
 
     def s3_objects(self, folder):
         """name -> (size, last_modified) for every object in the dated folder."""
@@ -573,6 +625,15 @@ class Pipeline:
         if len(pending) < len(files):
             self.log(f"{len(files) - len(pending)} part(s) are already in S3 from an earlier attempt - skipped")
         total = sum(os.path.getsize(f) for f in pending)
+        if pending:
+            # manifest.json means "this folder is complete". Remove it before changing any part, so a failed
+            # upload can never leave parts of two different backups next to an old manifest.
+            try:
+                self.s3.head_object(Bucket=self.bucket, Key=self.key(folder, "manifest.json"))
+                self.s3.delete_object(Bucket=self.bucket, Key=self.key(folder, "manifest.json"))
+            except ClientError as e:
+                if e.response["Error"]["Code"] not in ("404", "NoSuchKey", "NotFound"):
+                    raise
         self.log(f"Uploading {len(pending)} of {len(files)} file(s) "
                  f"({total / 1024 ** 3:.1f} GB) to s3://{self.bucket}/{self.key(folder)}")
 
@@ -651,10 +712,10 @@ class Pipeline:
                     if o["Key"].endswith("/"):
                         continue
                     cls = o.get("StorageClass", "STANDARD")
-                    if cls == target or (cls == "STANDARD" and o["Size"] < SMALL_OBJECT_BYTES):
-                        to_tag.append(o["Key"])      # already cheap, or too small to be worth copying - only needs the tag
-                    elif cls == "STANDARD":
-                        to_copy.append(o["Key"])
+                    if cls == "STANDARD" and o["Size"] >= SMALL_OBJECT_BYTES:
+                        to_copy.append(o["Key"])     # big STANDARD file: move it to the cheap class (the copy also tags it)
+                    else:
+                        to_tag.append(o["Key"])      # any other class, or too small to be worth copying: only tag it
             self.log(f"Folder {f}: {len(to_copy)} object(s) to move to {target}, "
                      f"{len(to_tag)} to tag only (checking tag)")
             for key in to_copy:
@@ -856,7 +917,8 @@ class Pipeline:
                 self.log(f"Kept local set {sets[prefix]['date']}: could not confirm it is complete in S3.",
                          logging.WARNING)
         for prefix, info in sets.items():
-            if prefix == protect or info["verified"]:
+            # uploaded sets were handled above (local_keep_sets + S3 check), even if step 2 was skipped
+            if prefix == protect or info["verified"] or info["uploaded"]:
                 continue
             remove(info, "never passed verification")
         for prefix, info in sets.items():
@@ -1058,7 +1120,7 @@ class Pipeline:
         return f"Backup created: {len(ctx['files'])} parts, {self.fmt_gb(total)}."
 
     def step_verify(self, ctx):
-        self.require_local_parts(ctx["files"], "Verify")
+        self.require_local_parts(ctx["files"])
         self._remove(ctx["verified"])                       # a failed verify must not leave an old 'verified' mark
         if self.test_mode:
             self.dummy_verify(ctx["files"], ctx["hash_file"])
@@ -1069,7 +1131,7 @@ class Pipeline:
         return f"Checksum of all {len(ctx['files'])} parts verified."
 
     def step_upload(self, ctx):
-        self.require_local_parts(ctx["files"], "Upload")
+        self.require_local_parts(ctx["files"])
         if not os.path.exists(ctx["verified"]):
             self.log("WARNING: this backup set has NOT passed step 2 (Verify). Uploading anyway because the "
                      "step was selected on its own - do not rely on this copy until it is verified.",
@@ -1316,7 +1378,7 @@ def run_gui(cfg, logger, test_mode=False, date_override=None, autostart=False, s
                      "archive": "Archive  -  older S3 folders to the cheap tier",
                      "cleanup": "Clean up  -  wait, then delete local backups and old logs"}
     else:
-        step_desc = {"backup": f"Backup  -  compressed FULL backup into {n_parts} parts",
+        step_desc = {"backup": f"Backup  -  {'compressed ' if cfg['compression'] else ''}FULL backup into {n_parts} parts",
                      "verify": f"Verify  -  RESTORE VERIFYONLY checksum of the {n_parts} parts",
                      "upload": "Upload  -  all parts + manifest to S3",
                      "archive": "Archive  -  older S3 folders to the cheap tier",
@@ -1649,8 +1711,13 @@ def run_gui(cfg, logger, test_mode=False, date_override=None, autostart=False, s
             with open(path, "r", encoding="utf-8") as fh:
                 data = json.load(fh)
             data["start_mode"] = mode
-            with open(path, "w", encoding="utf-8") as fh:
+            # write a temp file next to it, then swap it in: a crash mid-write can never corrupt config.json
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
                 json.dump(data, fh, indent=4)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, path)
             cfg["start_mode"] = mode
         except Exception as e:  # noqa
             messagebox.showwarning("Could not save", f"The setting works for now but could not be saved:\n{e}")

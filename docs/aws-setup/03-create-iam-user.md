@@ -55,6 +55,12 @@ A **policy** is a list of what the user is allowed to do.
       "Resource": "arn:aws:s3:::YOUR-BUCKET-NAME/*"
     },
     {
+      "Sid": "ReplaceManifestOnly",
+      "Effect": "Allow",
+      "Action": "s3:DeleteObject",
+      "Resource": "arn:aws:s3:::YOUR-BUCKET-NAME/*manifest.json"
+    },
+    {
       "Sid": "Notify",
       "Effect": "Allow",
       "Action": "sns:Publish",

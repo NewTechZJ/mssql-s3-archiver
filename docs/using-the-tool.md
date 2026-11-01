@@ -33,7 +33,7 @@ SQL Server ──► striped FULL backup (N files) ──► RESTORE VERIFYONLY 
 |---|---|
 | Windows | Server or desktop. The GUI and the `.exe` build are Windows-only. |
 | Python 3.10+ | Needed to run from source or to build the `.exe`. |
-| SQL Server | Must be an edition that supports `BACKUP ... WITH COMPRESSION`. **Express does not support it.** |
+| SQL Server | Must be an edition that supports `BACKUP ... WITH COMPRESSION`. **Express supported, but backups won’t be compressed.** |
 | ODBC driver | [ODBC Driver 18 for SQL Server](https://learn.microsoft.com/sql/connect/odbc/download-odbc-driver-for-sql-server) is recommended. Versions 17/13 also work. |
 | AWS account | You need an S3 bucket. SSM and SNS are optional. |
 
@@ -184,7 +184,6 @@ Practice a restore regularly. A backup you have never restored is untested.
 
 ## Known limitations / roadmap
 
-- [ ] **Retention gap.** If `upload_storage_class` is not `STANDARD` and not equal to `cheap_storage_class` (for example `STANDARD_IA` → `GLACIER_IR`), older parts are neither copied nor tagged. They never expire.
 - [ ] **Secrets on disk.** `Logs\config_cache.json` stores SSM values in plain text, and that includes a decrypted `sql_password`.
 - [ ] `part_count` is not checked against SQL Server's limit of 64 devices.
 - [ ] `manifest.json` records sizes but no checksums.

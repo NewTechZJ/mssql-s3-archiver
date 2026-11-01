@@ -138,7 +138,9 @@ Configuration source: cloud  (file: C:\SqlBackup\config.json)
 
 After every successful read, the program saves a copy of the SSM values in `Logs\config_cache.json`. If AWS can't be reached next time (for example, a network problem), it uses that copy and writes a warning in the log. If there is no copy yet, the run stops with an error.
 
-> ⚠️ **Security note:** this cache file stores values **in plain text, including a SecureString `sql_password`**. Make sure only administrators and the backup account can open the program's `Logs` folder. If that isn't possible, keep the password in the `SQLBACKUP_SQL_PASSWORD` Windows environment variable instead of SSM.
+> 🔒 **Security note:** the cache file is plain text, but it **never contains `sql_password`**. Other settings (bucket name, topic ARN and so on) are saved in it, so keep the program's `Logs` folder readable only by administrators and the backup account.
+>
+> Because the password isn't cached, a backup that uses a SQL login **can't connect to SQL Server on a day when SSM can't be reached**. The run fails and you get the failure email (if SNS is set up). Backups that use Windows authentication (empty `sql_username`) are not affected.
 
 ## Common problems
 
